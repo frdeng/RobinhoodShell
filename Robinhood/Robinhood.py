@@ -203,15 +203,15 @@ class Robinhood:
                     login_endpoint = endpoints.login()
                     payload['mfa_code'] = self.sms_code
                     res2 = self.session.post(login_endpoint, data=payload, timeout=15)
-                
+
                 elif self.challenge_id == "" and "challenge" in res_data.keys():
                     # handle challenge required
                     self.challenge_id = res_data["challenge"]["id"]
                     self.headers["X-ROBINHOOD-CHALLENGE-RESPONSE-ID"] = self.challenge_id #has to add this to stay logged in
                     sms_challenge_endpoint = "https://api.robinhood.com/challenge/{}/respond/".format(self.challenge_id)
                     challenge_res = {"response":self.sms_code}
-                    res2 = self.session.post(sms_challenge_endpoint, data=challenge_res, timeout=15)       
-                
+                    res2 = self.session.post(sms_challenge_endpoint, data=challenge_res, timeout=15)
+
                 res2.raise_for_status()
                 #gets access token for final response to stay logged in
                 res3 = self.session.post(endpoints.login(), data=payload, timeout=15)
@@ -1203,36 +1203,37 @@ class Robinhood:
                                  price=price,
                                  quantity=quantity))
 
-    def place_stop_loss_sell_order(self,
-                                   instrument_URL=None,
-                                   symbol=None,
-                                   time_in_force=None,
-                                   stop_price=None,
-                                   quantity=None):
-        """Wrapper for placing stop loss sell orders
 
-            Notes:
-                If only one of the instrument_URL or symbol are passed as
-                arguments the other will be looked up automatically.
+    # def place_stop_loss_sell_order(self,
+    #                                instrument_URL=None,
+    #                                symbol=None,
+    #                                time_in_force=None,
+    #                                stop_price=None,
+    #                                quantity=None):
+    #     """Wrapper for placing stop loss sell orders
 
-            Args:
-                instrument_URL (str): The RH URL of the instrument
-                symbol (str): The ticker symbol of the instrument
-                time_in_force (str): 'GFD' or 'GTC' (day or until cancelled)
-                stop_price (float): The price at which this becomes a market order
-                quantity (int): Number of shares to sell
+    #         Notes:
+    #             If only one of the instrument_URL or symbol are passed as
+    #             arguments the other will be looked up automatically.
 
-            Returns:
-                (:obj:`requests.request`): result from `orders` put command
-        """
-        return(self.submit_sell_order(order_type='market',
-                                 trigger='stop',
-                                 side='sell',
-                                 instrument_URL=instrument_URL,
-                                 symbol=symbol,
-                                 time_in_force=time_in_force,
-                                 stop_price=stop_price,
-                                 quantity=quantity))
+    #         Args:
+    #             instrument_URL (str): The RH URL of the instrument
+    #             symbol (str): The ticker symbol of the instrument
+    #             time_in_force (str): 'GFD' or 'GTC' (day or until cancelled)
+    #             stop_price (float): The price at which this becomes a market order
+    #             quantity (int): Number of shares to sell
+
+    #         Returns:
+    #             (:obj:`requests.request`): result from `orders` put command
+    #     """
+    #     return(self.submit_sell_order(order_type='market',
+    #                              trigger='stop',
+    #                              side='sell',
+    #                              instrument_URL=instrument_URL,
+    #                              symbol=symbol,
+    #                              time_in_force=time_in_force,
+    #                              stop_price=stop_price,
+    #                              quantity=quantity))
 
     def place_stop_limit_sell_order(self,
                                     instrument_URL=None,
@@ -1555,6 +1556,7 @@ class Robinhood:
     def place_order(self,
                     instrument,
                     quantity=1,
+                    stop_price=0.0,
                     price=0.0,
                     transaction=None,
                     trigger='immediate',
@@ -1565,7 +1567,8 @@ class Robinhood:
             Args:
                 instrument (dict): the RH URL and symbol in dict for the instrument to be traded
                 quantity (int): quantity of stocks in order
-                bid_price (float): price for order
+                stop_price (float): price for stop trigger
+                price (float): price for limit order
                 transaction (:enum:`Transaction`): BUY or SELL enum
                 trigger (:enum:`Trigger`): IMMEDIATE or STOP enum
                 order (:enum:`Order`): MARKET or LIMIT
@@ -1578,7 +1581,7 @@ class Robinhood:
         if isinstance(transaction, str):
             transaction = Transaction(transaction)
 
-        if not price:
+        if price == 0.0:
             price = self.quote_data(instrument['symbol'])['bid_price']
 
             if (price == 0) or (price == None):
@@ -1595,15 +1598,24 @@ class Robinhood:
             'side': transaction.name.lower()
         }
 
-        if order.lower() == "stop":
-            payload['stop_price'] = float(price)
-        else:
+        # stop loss trigger
+        if trigger.lower() == "stop":
+            payload['stop_price'] = float(stop_price)
+
+        # limit sell order
+        if order.lower() == 'limit':
             payload['price'] = float(price)
 
+        # buy order
+        if payload['side'] == 'buy':
+            payload['price'] = float(price)
+
+        #print(payload)
         try:
             res = self.session.post(endpoints.orders(), data=payload, timeout=15)
             res.raise_for_status()
 
+            #print(res)
             return res
 
         except Exception as ex: #sometimes Robinhood asks for another log in when placing an order
@@ -1628,15 +1640,24 @@ class Robinhood:
 
         """
 
-        if not ask_price:
-            ask_price = self.quote_data(instrument['symbol'])['ask_price']
+        order = 'limit'
+        # make it market price order if ask_price is 0.0
+        if ask_price == 0.0:
+            #ask_price = self.quote_data(instrument['symbol'])['ask_price']
 
-            if (ask_price == 0) or (ask_price == None):
-                ask_price = self.quote_data(instrument['symbol'])['last_trade_price']
+            #if (ask_price == 0) or (ask_price == None):
+            #    ask_price = self.quote_data(instrument['symbol'])['last_trade_price']
+            order = 'market'
 
         transaction = Transaction.BUY
 
-        return self.place_order(instrument, quantity, ask_price, transaction)
+        return self.place_order(instrument=instrument,
+                                quantity=quantity,
+                                price=ask_price,
+                                transaction=transaction,
+                                trigger='immediate',
+                                order=order,
+                                time_in_force='gfd')
 
     def place_sell_order(self,
                          instrument,
@@ -1652,15 +1673,73 @@ class Robinhood:
             Returns:
                 (:obj:`requests.request`): result from `orders` put command
         """
-        if not bid_price:
-            bid_price = self.quote_data(instrument['symbol'])['bid_price']
+        order = 'limit'
+        # make it marketplace order if bid price is 0.0
+        if bid_price == 0.0:
+            #bid_price = self.quote_data(instrument['symbol'])['bid_price']
 
-            if (bid_price == 0) or (bid_price == None):
-                bid_price = self.quote_data(instrument['symbol'])['last_trade_price']
+            #if (bid_price == 0) or (bid_price == None):
+            #    bid_price = self.quote_data(instrument['symbol'])['last_trade_price']
+            order = 'market'
 
         transaction = Transaction.SELL
 
-        return self.place_order(instrument, quantity, bid_price, transaction)
+        return self.place_order(instrument=instrument,
+                                quantity=quantity,
+                                price=bid_price,
+                                transaction=transaction,
+                                trigger='immediate',
+                                order=order,
+                                time_in_force='gfd')
+
+    def place_stop_loss_sell_order(self,
+                         instrument,
+                         quantity,
+                         stop_price=0.0,
+                         bid_price=0.0):
+        """Wrapper for placing stop loss sell orders
+
+            Args:
+                instrument (dict): the RH URL and symbol in dict for the instrument to be traded
+                quantity (int): quantity of stocks in order
+                bid_price (float): price for order (OPTIONAL! If not given, bid_price is automatic.)
+
+            Returns:
+                (:obj:`requests.request`): result from `orders` put command
+        """
+        # default limit order
+        order = 'limit'
+        # make it marketplace order if bid price is 0.0
+        if bid_price == 0.0:
+            #bid_price = self.quote_data(instrument['symbol'])['bid_price']
+
+            #if (bid_price == 0) or (bid_price == None):
+            #    bid_price = self.quote_data(instrument['symbol'])['last_trade_price']
+            order = 'market'
+
+        # default trigger
+        trigger = 'immediate'
+
+        # default time in force
+        time_in_force = 'gfd'
+
+        # make it stop order if stop price is privided
+        if stop_price != 0.0:
+            trigger = 'stop'
+            # set stop order - good until cancel
+            time_in_force = 'gtc'
+
+        transaction = Transaction.SELL
+
+        return self.place_order(instrument=instrument,
+                                quantity=quantity,
+                                stop_price=stop_price,
+                                price=bid_price,
+                                transaction=transaction,
+                                trigger=trigger,
+                                order=order,
+                                time_in_force=time_in_force)
+
 
     ##############################
     #GET OPEN ORDER(S)

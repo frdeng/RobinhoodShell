@@ -15,8 +15,9 @@ to create a command line interface for interacting with Robinhood
 
 * `l` : Lists your current portfolio
 * `lo` : Lists your current portfolio's options
-* `b <symbol> <quantity> <price>` : Submits a limit order to buy <quantity> stocks of <symbol> at <price>
-* `s <symbol> <quantity> <price>` : Submits a limit order to sell <quantity> stocks of <symbol> at <price>
+* `b <symbol> <quantity> [price]` : Submits a limit order to buy <quantity> stocks of <symbol> at <price>, if [price] is not specified, submit a market price buy order
+* `s <symbol> <quantity> [price]` : Submits a limit order to sell <quantity> stocks of <symbol> at <price>, if [price] is not specified, subit a market price sell order
+* `s. <symbol> <quantity> <stop_price> [ask_price]` : Submits a stop loss to sell <quantity> stocks of <symbol> at <stop_price>, if [ask_price] is not specified, subit a stop limit sell order
 * `q <symbol>` : Get quote (current price) for symbol
 * `q <symbol> <call/put> <strike_price> <(optional) expiration_date YYYY-mm-dd>` : Get quote for option, all expiration dates if none specified
 * `o` : Lists all open orders
@@ -141,7 +142,7 @@ class RobinhoodShell(cmd.Cmd):
         market_data = self.trader.get_stock_marketdata(instruments)
 
         table_data = []
-        table_data.append(["Symbol", "Last", "Shares", "Equity", "Avg Cost", "Return" , "Day", "EquityChange", "Day %"])
+        table_data.append(["Symbol", "Last", "Shares", "Equity", "Avg Cost", "Return", "Return %",  "Day", "Today's Return", "Day %"])
 
         i = 0
         for position in positions['results']:
@@ -150,8 +151,13 @@ class RobinhoodShell(cmd.Cmd):
             price = market_data[i]['last_trade_price']
             total_equity = float(price) * quantity
             buy_price = float(position['average_buy_price'])
-            p_l_numerical = total_equity - (buy_price * quantity)
+            p_l_numerical = total_equity - (buy_price * quantity) # total return
             p_l = "{:.2f}".format(p_l_numerical)
+            if buy_price == 0:
+                total_return_pct_numerical = total_equity
+            else:
+                total_return_pct_numerical = float(p_l_numerical) / float(buy_price * quantity) * 100
+            total_return_pct = "{:.2f}".format(total_return_pct_numerical)
             total_equity = "{:.2f}".format(total_equity)
             buy_price = "{:.2f}".format(buy_price)
             day_change_numerical = float(market_data[i]['last_trade_price']) - float(market_data[i]['previous_close'])
@@ -168,10 +174,11 @@ class RobinhoodShell(cmd.Cmd):
                 quantity,
                 total_equity,
                 buy_price,
-                color_data(p_l),
+                color_data(p_l), # total return
+                color_data(total_return_pct, pct=True), # total return %
                 color_data(day_change),
                 color_data(day_change_q_val),
-                color_data(day_change_pct)
+                color_data(day_change_pct, pct=True)
                 ])
             i += 1
 
@@ -275,7 +282,7 @@ class RobinhoodShell(cmd.Cmd):
                 print("Watchlist empty!")
 
     def do_b(self, arg):
-        'Buy stock b <symbol> <quantity> <price>'
+        'Buy stock b <symbol> <quantity> [price]'
         parts = arg.split()
         if len(parts) >= 2 and len(parts) <= 3:
             symbol = parts[0].upper()
@@ -291,6 +298,9 @@ class RobinhoodShell(cmd.Cmd):
                 return
 
             res = self.trader.place_buy_order(stock_instrument, quantity, price)
+            if res is None:
+                print("Bad Order")
+                return
 
             if not (res.status_code == 200 or res.status_code == 201):
                 print("Error executing order")
@@ -306,7 +316,7 @@ class RobinhoodShell(cmd.Cmd):
             print("Bad Order")
 
     def do_s(self, arg):
-        'Sell stock s <symbol> <quantity> <?price>'
+        'Sell stock s <symbol> <quantity> [price]'
         parts = arg.split()
         if len(parts) >= 2 and len(parts) <= 3:
             symbol = parts[0].upper()
@@ -322,6 +332,9 @@ class RobinhoodShell(cmd.Cmd):
                 return
 
             res = self.trader.place_sell_order(stock_instrument, quantity, price)
+            if res is None:
+                print("Bad Order")
+                return
 
             if not (res.status_code == 200 or res.status_code == 201):
                 print("Error executing order")
@@ -337,16 +350,30 @@ class RobinhoodShell(cmd.Cmd):
             print("Bad Order")
 
     def do_sl(self, arg):
-        'Setup stop loss on stock sl <symbol> <quantity> <price>'
+        'Setup stop loss on stock: sl <symbol> <quantity> <stop_price> [price]'
         parts = arg.split()
-        if len(parts) == 3:
+        if len(parts) >=3 and len(parts) <= 4:
             symbol = parts[0].upper()
             quantity = parts[1]
-            price = float(parts[2])
+            stop_price = float(parts[2])
+            if len(parts) == 4:
+                price = float(parts[3])
+            else:
+                price = 0.0
 
-            stock_instrument = self.trader.instruments(symbol)[0]
-            res = self.trader.place_stop_loss_order(stock_instrument, quantity, price)
+            #stock_instrument = self.trader.instruments(symbol)[0]
+            stock_instrument = self.get_instrument(symbol)
+            if not stock_instrument['url']:
+                print("Stock not found")
+                return
 
+            #res = self.trader.place_stop_loss_sell_order(stock_instrument, quantity, price)
+            res = self.trader.place_stop_loss_sell_order(stock_instrument, quantity,
+                                                         stop_price, price)
+
+            if res is None:
+                print("Bad Order")
+                return
             if not (res.status_code == 200 or res.status_code == 201):
                 print("Error executing order")
                 try:
@@ -367,23 +394,17 @@ class RobinhoodShell(cmd.Cmd):
             open_t_data=[]
             open_table = SingleTable(open_t_data,'open List')
             open_table.inner_row_border = True
-            open_table.justify_columns = {0: 'center', 1: 'center', 2: 'center', 3:'center',4: 'center'}
-            open_t_data.append( ["index", "symbol", "price", "quantity", "type", "id"])
+            open_table.justify_columns = {0: 'center', 1: 'center', 2: 'center', 3:'center',4: 'center', 5: 'center'}
+            open_t_data.append( ["index", "symbol", "stop_price", "price", "quantity", "type", "id"])
 
             index = 1
             for order in open_orders:
-
-                if order['trigger'] == 'stop':
-                    order_price = order['stop_price']
-                    order_type  = "stop loss"
-                else:
-                    order_price = order['price']
-                    order_type  = order['side']+" "+order['type']
-
+                order_type = "{} {} {}".format(order['side'], order['trigger'], order['type'])
                 open_t_data.append([
                     index,
                     self.get_symbol(order['instrument']),
-                    order_price,
+                    order['stop_price'],
+                    order['price'],
                     int(float(order['quantity'])),
                     order_type,
                     order['id'],
@@ -598,13 +619,14 @@ class RobinhoodShell(cmd.Cmd):
         self.instruments_cache[symbol] = url
         self.instruments_reverse_cache[url] = symbol
 
-def color_data(value):
+def color_data(value, pct=False):
+    number = str(value)
+    if pct:
+        number += '%'
     if float(value) > 0:
-        number = Color('{autogreen}'+str(value)+'{/autogreen}')
+        number = Color('{autogreen}' + number + '{/autogreen}')
     elif float(value) < 0:
-        number = Color('{autored}'+str(value)+'{/autored}')
-    else:
-        number = str(value)
+        number = Color('{autored}' + number + '{/autored}')
 
     return number
 
